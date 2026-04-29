@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.13)
 
 enable_language(C ASM)
 
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -std=c99 -nostdinc -include ${CMAKE_CURRENT_SOURCE_DIR}/nolegacy.h -Wno-error=int-conversion")
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -std=c99 -nostdinc -include ${CMAKE_CURRENT_SOURCE_DIR}/nolegacy.h -Wno-error=int-conversion -Wno-error=incompatible-pointer-types")
 include_directories(BEFORE
 	"${CMAKE_CURRENT_SOURCE_DIR}/wrappers"
 	"${CMAKE_CURRENT_SOURCE_DIR}/mach"
