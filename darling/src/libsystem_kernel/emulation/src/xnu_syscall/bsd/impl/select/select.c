@@ -7,6 +7,8 @@
 #include <darling/emulation/linux_premigration/linux-syscalls/linux.h>
 #include <darling/emulation/xnu_syscall/bsd/helper/bsdthread/cancelable.h>
 
+extern long sys_pselect_nocancel(int nfds, void* rfds, void* wfds, void* efds, struct bsd_timeval* timeout, const void* mask);
+
 long sys_select(int nfds, void* rfds, void* wfds, void* efds, struct bsd_timeval* timeout)
 {
 	CANCELATION_POINT();

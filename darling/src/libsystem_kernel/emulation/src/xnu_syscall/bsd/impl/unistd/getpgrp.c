@@ -4,6 +4,8 @@
 #include <darling/emulation/conversion/errno.h>
 #include <darling/emulation/linux_premigration/linux-syscalls/linux.h>
 
+extern long sys_getpgid(int pid);
+
 long sys_getpgrp(void)
 {
 	#if defined(__NR_getpgrp)

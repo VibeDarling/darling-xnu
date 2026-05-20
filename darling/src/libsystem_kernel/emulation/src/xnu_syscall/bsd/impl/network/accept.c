@@ -24,11 +24,10 @@ long sys_accept_nocancel(int fd, void* from, int* socklen)
 	int ret;
 	struct sockaddr_fixup* fixed;
 
-#ifdef __NR_socketcall
-	ret = LINUX_SYSCALL(__NR_socketcall, LINUX_SYS_ACCEPT, ((long[6]) { fd, from, socklen }));
-#else
-	ret = LINUX_SYSCALL(__NR_accept, fd, from, socklen);
-#endif
+	// DARLING-ANDROID: the host kernel rejects __NR_accept (202) and the
+	// __NR_socketcall path with SIGSYS; use __NR_accept4 (242) with flags=0,
+	// which is exactly what Bionic's own accept() uses on this device.
+	ret = LINUX_SYSCALL(__NR_accept4, fd, from, socklen, 0);
 
 	if (ret < 0)
 		ret = errno_linux_to_bsd(ret);

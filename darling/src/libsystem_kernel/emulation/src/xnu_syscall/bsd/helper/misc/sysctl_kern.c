@@ -217,9 +217,12 @@ sysctl_handler(handle_hostname)
 	
 	if (_new && newlen > 0)
 	{
-		rv = LINUX_SYSCALL(__NR_sethostname, _new, newlen);
-		if (rv < 0)
-			rv = errno_linux_to_bsd(rv);
+		// DARLING-ANDROID: this Android aarch64 kernel does not expose
+		// __NR_sethostname (asm-generic 161); a raw svc #0 with that number
+		// raises SIGSYS and kills the guest. Setting the hostname requires
+		// root (pid1) anyway, so fail gracefully with EPERM instead of the
+		// raw call.
+		rv = -EPERM;
 	}
 	
 	return rv;
@@ -234,9 +237,10 @@ sysctl_handler(handle_domainname)
 	
 	if (_new && newlen > 0)
 	{
-		rv = LINUX_SYSCALL(__NR_setdomainname, _new, newlen);
-		if (rv < 0)
-			rv = errno_linux_to_bsd(rv);
+		// DARLING-ANDROID: __NR_setdomainname (asm-generic 162) is not present
+		// on this kernel -> raw svc #0 would raise SIGSYS. Requires root
+		// anyway; fail gracefully with EPERM.
+		rv = -EPERM;
 	}
 	
 	return rv;

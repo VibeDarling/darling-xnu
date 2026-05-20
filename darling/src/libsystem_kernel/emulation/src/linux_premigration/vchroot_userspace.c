@@ -78,6 +78,8 @@ static int prefix_path_len = -1;
 
 static const char EXIT_PATH[] = "/Volumes/SystemRoot";
 
+static void init_vchroot_path(void);
+
 #ifndef TEST
 #ifdef VARIANT_DYLD
 #define icase_enabled false
@@ -128,8 +130,12 @@ int __darling_vchroot(int dfd)
 	#else
 		rv = LINUX_SYSCALL(__NR_readlinkat, LINUX_AT_FDCWD, buf, prefix_path, sizeof(prefix_path) - 1);
 	#endif
-	prefix_path[rv] = '\0';
-	prefix_path_len = rv;
+	if (rv < 0) {
+		init_vchroot_path();
+	} else {
+		prefix_path[rv] = '\0';
+		prefix_path_len = rv;
+	}
 
 	return 0;
 }
@@ -173,7 +179,7 @@ int vchroot_expand(struct vchroot_expand_args* args)
 	struct context ctxt;
 
 #ifndef TEST
-	if (prefix_path_len == -1)
+	if (prefix_path_len <= 0)
 		init_vchroot_path();
 	__simple_printf("vchroot_expand(): input %s\n", args->path);
 #endif
@@ -188,6 +194,29 @@ int vchroot_expand(struct vchroot_expand_args* args)
 
 	if (*input_path == '\0')
 		return -LINUX_ENOENT;
+
+	/*
+	 * Non-root host-FS escape: guest paths under /Volumes/SystemRoot map to
+	 * the HOST root. In root mode /Volumes/SystemRoot is a bind mount of the
+	 * host root; in nonroot mode (no mounts, e.g. Android) the vchroot layer
+	 * must translate such paths to a host-root-relative path directly, instead
+	 * of prefixing them with the vchroot prefix (which would create a symlink
+	 * loop, since the prefix itself lives on the host root).
+	 */
+	if (strncmp(input_path, EXIT_PATH, sizeof(EXIT_PATH) - 1) == 0)
+	{
+		const char* rest = input_path + (sizeof(EXIT_PATH) - 1);
+		if (*rest == '\0' || *rest == '/')
+		{
+			if (*rest == '\0')
+				rest = "/";
+			__simple_sprintf(args->path, "%s", rest);
+#ifndef TEST
+			__simple_printf("    vchroot_expand(): host-FS escape %s\n", args->path);
+#endif
+			return 0;
+		}
+	}
 
 	if (*input_path != '/')
 	{
@@ -479,7 +508,7 @@ static bool next_component(const char* from, const char** end)
 int vchroot_fdpath(struct vchroot_fdpath_args* args)
 {
 #ifndef TEST
-	if (prefix_path_len == -1)
+	if (prefix_path_len <= 0)
 		init_vchroot_path();
 #endif
 
