@@ -43,13 +43,20 @@ typedef union epoll_data
 	uint64_t u64;
 } epoll_data_t;
 
+#ifdef __x86_64__
+# define __EPOLL_PACKED __attribute__((packed))
+#else
+# define __EPOLL_PACKED
+#endif
+
 struct epoll_event
 {
 	uint32_t events;
 	epoll_data_t data;
-} __attribute__((packed));
+} __EPOLL_PACKED;
 
 extern int epoll_create (int __size) __THROW;
+extern int epoll_create1 (int __flags) __THROW;
 
 extern int epoll_ctl (int __epfd, int __op, int __fd,
 						struct epoll_event *__event) __THROW;
