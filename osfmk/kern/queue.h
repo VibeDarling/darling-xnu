@@ -227,6 +227,19 @@ typedef struct queue_entry      *queue_entry_t;
 
 #ifdef XNU_KERNEL_PRIVATE
 #include <kern/debug.h>
+/*
+ * On aarch64 the process MMU runs with Top-Byte-Ignore (TBI): the top
+ * byte of a virtual address (bits 56-63) is ignored for memory accesses.
+ * The dserver's allocator/runtime tags some heap pointers with a value in
+ * that top byte (observed: 0xb4). Two pointers that differ only in the top
+ * byte refer to the SAME memory, but a plain C pointer comparison (which the
+ * linkage check below performs) does NOT ignore the tag, so a logically
+ * valid linkage (next->prev == elt) can spuriously fail and panic.
+ * Canonicalize by masking the top byte before comparing.
+ */
+#define QUEUE_ENTRY_CANONICAL(p) \
+	((queue_entry_t)((uintptr_t)(p) & 0x00FFFFFFFFFFFFFFUL))
+
 static inline void
 __QUEUE_ELT_VALIDATE(queue_entry_t elt)
 {
@@ -242,7 +255,10 @@ __QUEUE_ELT_VALIDATE(queue_entry_t elt)
 	if (__improbable(elt_next == (queue_entry_t)NULL || elt_prev == (queue_entry_t)NULL)) {
 		panic("Invalid queue element pointers for %p: next %p prev %p", elt, elt_next, elt_prev);
 	}
-	if (__improbable(elt_next->prev != elt || elt_prev->next != elt)) {
+	/* Compare canonical (top-byte-masked) addresses: TBI makes the top
+	 * byte a tag, so a tag mismatch is not real corruption. */
+	if (__improbable(QUEUE_ENTRY_CANONICAL(elt_next->prev) != QUEUE_ENTRY_CANONICAL(elt) ||
+		QUEUE_ENTRY_CANONICAL(elt_prev->next) != QUEUE_ENTRY_CANONICAL(elt))) {
 		panic("Invalid queue element linkage for %p: next %p next->prev %p prev %p prev->next %p",
 		    elt, elt_next, elt_next->prev, elt_prev, elt_prev->next);
 	}
