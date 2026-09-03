@@ -303,6 +303,19 @@ static int vchroot_run(const char* input_path, struct context* ctxt)
 
 			if (len == 2 && input_path[0] == '.' && input_path[1] == '.') // ..
 			{
+				// Branch 1 (pre-pop guard): if we are already at root (current_path_len <= 1)
+				// or already at the vchroot root boundary (current_path_len <= current_root_len + 1),
+				// do not pop a directory component. Clamp to current_root and continue.
+				if (ctxt->current_path_len <= 1 || (ctxt->current_root_len > 0 && ctxt->current_path_len <= ctxt->current_root_len + 1))
+				{
+					if (ctxt->current_root_len > 0)
+					{
+						strcpy(ctxt->current_path, ctxt->current_root);
+						ctxt->current_path_len = ctxt->current_root_len;
+					}
+					break;
+				}
+
 				// Returning back into the vchrooted area
 				if (ctxt->current_path_len <= 1)
 				{
@@ -330,7 +343,13 @@ static int vchroot_run(const char* input_path, struct context* ctxt)
 
 						// We cannot exit current_root via ..
 						if (ctxt->current_path_len < ctxt->current_root_len)
-							return -LINUX_ENOENT;
+						{
+							// Branch 2 (post-pop safety clamp): if popping a path component
+							// left the path shallower than current_root, clamp back to current_root
+							// rather than failing with -LINUX_ENOENT (which broke cd .. from root).
+							strcpy(ctxt->current_path, ctxt->current_root);
+							ctxt->current_path_len = ctxt->current_root_len;
+						}
 						break;
 					}
 					p--;
