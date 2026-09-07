@@ -489,4 +489,5 @@ void* __bsd_syscall_table[600] = {
 	[520] = sys_terminate_with_payload,
 	[521] = sys_abort_with_payload,
 	[524] = sys_setattrlistat,
+	[539] = sys_fsgetpath,
 };

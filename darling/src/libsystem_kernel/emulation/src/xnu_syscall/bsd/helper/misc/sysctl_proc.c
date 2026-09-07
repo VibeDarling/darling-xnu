@@ -54,10 +54,25 @@ int _sysctl_proc(int what, int flag, struct kinfo_proc* out, unsigned long* bufl
 		return -EFAULT;
 
 	fd = sys_open_nocancel("/proc", BSD_O_RDONLY | BSD_O_DIRECTORY, 0);
+	if (fd >= 0)
+	{
+		ret = sys_getdirentries(fd, (char*) dents, sizeof(dents), &basep);
+		if (ret <= 0)
+		{
+			sys_close(fd);
+			fd = -1;
+		}
+	}
+	if (fd < 0)
+	{
+		fd = sys_open_nocancel("/Volumes/SystemRoot/proc", BSD_O_RDONLY | BSD_O_DIRECTORY, 0);
+		basep = 0;
+		ret = sys_getdirentries(fd, (char*) dents, sizeof(dents), &basep);
+	}
 	if (fd < 0)
 		return fd;
 
-	while ((ret = sys_getdirentries(fd, (char*) dents, sizeof(dents), &basep)) > 0)
+	while (ret > 0)
 	{
 		int pos = 0;
 		
@@ -95,6 +110,7 @@ int _sysctl_proc(int what, int flag, struct kinfo_proc* out, unsigned long* bufl
 
 			pos += dent->d_reclen;
 		}
+		ret = sys_getdirentries(fd, (char*) dents, sizeof(dents), &basep);
 	}
 
 	if (*buflen < nproc*sizeof(struct kinfo_proc))
