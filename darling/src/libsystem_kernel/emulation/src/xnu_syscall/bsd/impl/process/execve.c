@@ -186,8 +186,8 @@ long sys_execve(const char* fname, const char** argvp, const char** envp)
 		struct linux_sockaddr_un* server_socket_address = dserver_rpc_hooks_get_server_address();
 		const char* server_socket_path = server_socket_address->sun_path;
 
-		char mldr_lifetime_pipe_env[32] = { '\0' };
-		__simple_snprintf(mldr_lifetime_pipe_env, sizeof(mldr_lifetime_pipe_env) - 1, "__mldr_lifetime_pipe=%d", __dserver_get_process_lifetime_pipe());
+		char* mldr_lifetime_pipe_env = (char*) __builtin_alloca(32);
+		__simple_snprintf(mldr_lifetime_pipe_env, 31, "__mldr_lifetime_pipe=%d", __dserver_get_process_lifetime_pipe());
 
 		// count original env vars
 		while (envp[len++]);
