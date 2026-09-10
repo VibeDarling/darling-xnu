@@ -19,7 +19,9 @@ long sys_ulock_wake(uint32_t operation, void* addr, uint64_t wake_value)
 	// lkm_call(0x1024, buf);
 
 	op = operation & XNU_UL_OPCODE_MASK;
-	if (op == XNU_UL_COMPARE_AND_WAIT || op == XNU_UL_UNFAIR_LOCK)
+	if (op == XNU_UL_COMPARE_AND_WAIT || op == XNU_UL_UNFAIR_LOCK ||
+		op == XNU_UL_COMPARE_AND_WAIT_SHARED || op == XNU_UL_UNFAIR_LOCK64_SHARED ||
+		op == XNU_UL_COMPARE_AND_WAIT64 || op == XNU_UL_COMPARE_AND_WAIT64_SHARED)
 	{
 		int value;
 
@@ -30,7 +32,12 @@ long sys_ulock_wake(uint32_t operation, void* addr, uint64_t wake_value)
 		else
 			value = 1;
 
-		ret = LINUX_SYSCALL(__NR_futex, addr, FUTEX_WAKE | FUTEX_PRIVATE_FLAG,
+		bool is_shared = (op == XNU_UL_COMPARE_AND_WAIT_SHARED ||
+						  op == XNU_UL_UNFAIR_LOCK64_SHARED ||
+						  op == XNU_UL_COMPARE_AND_WAIT64_SHARED);
+		int futex_flags = is_shared ? 0 : FUTEX_PRIVATE_FLAG;
+
+		ret = LINUX_SYSCALL(__NR_futex, addr, FUTEX_WAKE | futex_flags,
 			value);
 	}
 	else
