@@ -189,24 +189,81 @@ long sys_execve(const char* fname, const char** argvp, const char** envp)
 		char* mldr_lifetime_pipe_env = (char*) __builtin_alloca(32);
 		__simple_snprintf(mldr_lifetime_pipe_env, 31, "__mldr_lifetime_pipe=%d", __dserver_get_process_lifetime_pipe());
 
-		// count original env vars
-		while (envp[len++]);
+		extern char* getenv(const char* name);
+		char* termux_ld_env = NULL;
+		int add_termux_ld = 0;
 
-		const int new_env_count = 2;
+		// Restrict LD_LIBRARY_PATH injection strictly to Android environment
+		bool is_android = (LINUX_SYSCALL(__NR_faccessat, LINUX_AT_FDCWD, "/system/bin/sh", 0, 0) == 0 ||
+		                   LINUX_SYSCALL(__NR_faccessat, LINUX_AT_FDCWD, "/data/data", 0, 0) == 0);
 
-		// allocate a new envp and env0, env1
-		modenvp = (const char**)__builtin_alloca(sizeof(void*) * (len + new_env_count));
+		if (is_android) {
+			const char* termux_prefix = getenv("TERMUX_PREFIX");
+			if (!termux_prefix || !termux_prefix[0]) {
+				termux_prefix = getenv("PREFIX");
+			}
+			if ((!termux_prefix || !termux_prefix[0]) && envp) {
+				for (int i = 0; envp[i]; i++) {
+					if (strncmp(envp[i], "TERMUX_PREFIX=", 14) == 0) {
+						termux_prefix = envp[i] + 14;
+						break;
+					}
+					if (strncmp(envp[i], "PREFIX=", 7) == 0) {
+						termux_prefix = envp[i] + 7;
+						break;
+					}
+				}
+			}
+
+			char* termux_lib = NULL;
+			if (termux_prefix && termux_prefix[0]) {
+				termux_lib = (char*)__builtin_alloca(strlen(termux_prefix) + sizeof("/lib"));
+				strcpy(termux_lib, termux_prefix);
+				strcat(termux_lib, "/lib");
+			} else {
+				const char* home = getenv("HOME");
+				if (home && home[0]) {
+					termux_lib = (char*)__builtin_alloca(strlen(home) + sizeof("/../usr/lib"));
+					strcpy(termux_lib, home);
+					strcat(termux_lib, "/../usr/lib");
+				}
+			}
+
+			if (termux_lib && LINUX_SYSCALL(__NR_faccessat, LINUX_AT_FDCWD, termux_lib, 0, 0) == 0) {
+				add_termux_ld = 1;
+				termux_ld_env = (char*)__builtin_alloca(strlen(termux_lib) + sizeof("LD_LIBRARY_PATH="));
+				strcpy(termux_ld_env, "LD_LIBRARY_PATH=");
+				strcat(termux_ld_env, termux_lib);
+			}
+		}
+
+		// count original env vars (handling NULL envp safely)
+		if (envp) {
+			while (envp[len]) len++;
+		}
+
+		const int new_env_count = 2 + add_termux_ld;
+
+		// allocate a new envp and env0, env1 (+1 for trailing NULL)
+		modenvp = (const char**)__builtin_alloca(sizeof(void*) * (len + new_env_count + 1));
 		buf = __builtin_alloca(strlen(server_socket_path) + sizeof("__mldr_sockpath="));
 
 		// set up the new env0
 		strcpy(buf, "__mldr_sockpath=");
 		strcat(buf, server_socket_path);
-		modenvp[0] = buf;
-		modenvp[1] = mldr_lifetime_pipe_env;
+		int env_idx = 0;
+		modenvp[env_idx++] = buf;
+		modenvp[env_idx++] = mldr_lifetime_pipe_env;
+		if (add_termux_ld) {
+			modenvp[env_idx++] = termux_ld_env;
+		}
 
 		// append original env vars
-		for (int i = new_env_count; i < len + new_env_count; i++)
-			modenvp[i] = envp[i-new_env_count];
+		if (envp) {
+			for (int i = 0; i < len; i++)
+				modenvp[env_idx++] = envp[i];
+		}
+		modenvp[env_idx] = NULL;
 
 		envp = modenvp;
 	}
