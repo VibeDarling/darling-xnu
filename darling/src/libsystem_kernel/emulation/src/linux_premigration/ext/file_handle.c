@@ -43,6 +43,9 @@ int sys_name_to_handle(const char* name, RefData* ref, int follow)
 	vc.flags = follow ? VCHROOT_FOLLOW : 0;
 	vc.dfd = get_perthread_wd();
 
+	if (strlen(name) >= sizeof(vc.path))
+		return -ENAMETOOLONG;
+
 	strcpy(vc.path, name);
 	ret = vchroot_expand(&vc);
 	if (ret < 0)
@@ -61,13 +64,17 @@ int sys_name_to_handle(const char* name, RefData* ref, int follow)
 
 	if (ret == 0)
 	{
+		char* saved = strdup(name);
+		if (saved == NULL)
+			return -ENOMEM;
+
 		os_unfair_lock_lock(&g_savedRefLock);
 
 		if (g_savedRefs[g_nextSavedRef].path)
 			free(g_savedRefs[g_nextSavedRef].path);
 
 		ref->gen = g_nextGen++;
-		g_savedRefs[g_nextSavedRef].path = strdup(name);
+		g_savedRefs[g_nextSavedRef].path = saved;
 		g_savedRefs[g_nextSavedRef].gen = ref->gen;
 		ref->mount_id = MOUNT_ID_SAVED;
 		ref->index = g_nextSavedRef;
@@ -93,7 +100,9 @@ int sys_handle_to_name(RefData* ref, char name[4096])
 		int ret = -ENOENT;
 		os_unfair_lock_lock(&g_savedRefLock);
 
-		if (g_savedRefs[ref->index].gen == ref->gen)
+		// An FSRef is caller memory: check the index before using it.
+		if (ref->index >= 0 && ref->index < (int)(sizeof(g_savedRefs) / sizeof(g_savedRefs[0]))
+			&& g_savedRefs[ref->index].path != NULL && g_savedRefs[ref->index].gen == ref->gen)
 		{
 			strlcpy(name, g_savedRefs[ref->index].path, 4096);
 			ret = sys_access(name, 0);
