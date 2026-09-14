@@ -153,13 +153,30 @@ void sigexc_setup(void)
 #endif
 }
 
+// darlingserver RPC failures that mean the server has gone away (e.g. during `darling shutdown`),
+// as negative Linux errno values: ENOENT, EPIPE, ECONNRESET, ENOTCONN, ECONNREFUSED.
+static bool is_server_gone(int status)
+{
+	return status == -2 || status == -32 || status == -104 || status == -107 || status == -111;
+}
+
+// Called when an RPC made from a signal handler fails. If darlingserver is gone, the container is
+// shutting down and nothing can be done anymore: exit quietly instead of aborting (which would
+// raise SIGTRAP/SIGABRT and leave a core dump for every process). Other failures still abort.
+static void rpc_failed_in_handler(const char* what, int status)
+{
+	if (is_server_gone(status))
+		LINUX_SYSCALL(__NR_exit_group, 0);
+	__simple_printf("*** %s failed with code %d ***\n", what, status);
+	__simple_abort();
+}
+
 void sigrt_handler(int signum, struct linux_siginfo* info, struct linux_ucontext* ctxt)
 {
 	int status = dserver_rpc_interrupt_enter();
 
 	if (status != 0) {
-		__simple_printf("*** dserver_rpc_interrupt_enter failed with code %d ***\n", status);
-		__simple_abort();
+		rpc_failed_in_handler("dserver_rpc_interrupt_enter", status);
 	}
 
 	if (signum == SIGNAL_SIGEXC_SUSPEND) {
@@ -181,8 +198,7 @@ void sigrt_handler(int signum, struct linux_siginfo* info, struct linux_ucontext
 
 	int ret = dserver_rpc_thread_suspended(&tstate, &fstate);
 	if (ret < 0) {
-		__simple_printf("dserver_rpc_thread_suspended failed internally: %d", ret);
-		__simple_abort();
+		rpc_failed_in_handler("dserver_rpc_thread_suspended", ret);
 	}
 
 	state_from_kernel(ctxt, &tstate, &fstate);
@@ -191,8 +207,7 @@ void sigrt_handler(int signum, struct linux_siginfo* info, struct linux_ucontext
 
 		int ret = dserver_rpc_s2c_perform();
 		if (ret < 0) {
-			__simple_printf("dserver_rpc_s2c_perform failed internally: %d", ret);
-			__simple_abort();
+			rpc_failed_in_handler("dserver_rpc_s2c_perform", ret);
 		}
 	} else {
 		__simple_printf("Unknown/unrecognized real-time signal: %d", signum);
@@ -201,8 +216,7 @@ void sigrt_handler(int signum, struct linux_siginfo* info, struct linux_ucontext
 	status = dserver_rpc_interrupt_exit();
 
 	if (status != 0) {
-		__simple_printf("*** dserver_rpc_interrupt_exit failed with code %d ***\n", status);
-		__simple_abort();
+		rpc_failed_in_handler("dserver_rpc_interrupt_exit", status);
 	}
 }
 
@@ -288,8 +302,7 @@ void sigexc_handler(int linux_signum, struct linux_siginfo* info, struct linux_u
 	int status = dserver_rpc_interrupt_enter();
 
 	if (status != 0) {
-		__simple_printf("*** dserver_rpc_interrupt_enter failed with code %d ***\n", status);
-		__simple_abort();
+		rpc_failed_in_handler("dserver_rpc_interrupt_enter", status);
 	}
 
 	kern_printf("sigexc_handler(%d, %p, %p)\n", linux_signum, info, ctxt);
@@ -335,6 +348,9 @@ void sigexc_handler(int linux_signum, struct linux_siginfo* info, struct linux_u
 
 	state_to_kernel(ctxt, &tstate, &fstate);
 	int ret = dserver_rpc_sigprocess(bsd_signum, linux_signum, info->si_pid, info->si_code, info->si_addr, &tstate, &fstate, &bsd_signum);
+	if (ret < 0 && is_server_gone(ret)) {
+		LINUX_SYSCALL(__NR_exit_group, 0);
+	}
 	if (ret < 0) {
 #if defined(__x86_64__)
 		__simple_printf("sigprocess failed internally while processing Linux signal %d: %d in PID %d (RIP 0x%llx)\n", linux_signum, ret, getpid(), (unsigned long long)ctxt->uc_mcontext.gregs.rip);
@@ -404,8 +420,7 @@ out:
 	status = dserver_rpc_interrupt_exit();
 
 	if (status != 0) {
-		__simple_printf("*** dserver_rpc_interrupt_exit failed with code %d ***\n", status);
-		__simple_abort();
+		rpc_failed_in_handler("dserver_rpc_interrupt_exit", status);
 	}
 }
 
