@@ -160,13 +160,22 @@ static bool is_server_gone(int status)
 	return status == -2 || status == -32 || status == -104 || status == -107 || status == -111;
 }
 
+// The process can't continue without darlingserver. Exit without a core dump, but with a failure
+// status: exiting with 0 would report success for work that never finished (shellspawn forwards the
+// status as the exit code of `darling shell <command>`). 128 + SIGKILL is how shellspawn reports a
+// process that was killed by a signal.
+static void exit_server_gone(void)
+{
+	LINUX_SYSCALL(__NR_exit_group, 128 + LINUX_SIGKILL);
+}
+
 // Called when an RPC made from a signal handler fails. If darlingserver is gone, the container is
-// shutting down and nothing can be done anymore: exit quietly instead of aborting (which would
-// raise SIGTRAP/SIGABRT and leave a core dump for every process). Other failures still abort.
+// shutting down and nothing can be done anymore: exit instead of aborting (which would raise
+// SIGTRAP/SIGABRT and leave a core dump for every process). Other failures still abort.
 static void rpc_failed_in_handler(const char* what, int status)
 {
 	if (is_server_gone(status))
-		LINUX_SYSCALL(__NR_exit_group, 0);
+		exit_server_gone();
 	__simple_printf("*** %s failed with code %d ***\n", what, status);
 	__simple_abort();
 }
@@ -349,7 +358,7 @@ void sigexc_handler(int linux_signum, struct linux_siginfo* info, struct linux_u
 	state_to_kernel(ctxt, &tstate, &fstate);
 	int ret = dserver_rpc_sigprocess(bsd_signum, linux_signum, info->si_pid, info->si_code, info->si_addr, &tstate, &fstate, &bsd_signum);
 	if (ret < 0 && is_server_gone(ret)) {
-		LINUX_SYSCALL(__NR_exit_group, 0);
+		exit_server_gone();
 	}
 	if (ret < 0) {
 #if defined(__x86_64__)
