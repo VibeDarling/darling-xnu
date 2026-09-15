@@ -13,7 +13,8 @@
 // Instead, we use a small open-addressed hash table keyed by Linux tid (from gettid).
 // This is slower than a register but works correctly without TLV.
 
-#define TSD_TABLE_SIZE 1024  /* power of two; > expected max thread count */
+#define TSD_TABLE_BITS 10
+#define TSD_TABLE_SIZE (1u << TSD_TABLE_BITS)  /* 1024; > expected max thread count */
 
 struct tsd_entry {
 	long tid;       /* Linux tid; 0 means empty slot */
@@ -32,8 +33,12 @@ static void* __attribute__((aligned(4096))) tsd_zero_page[4096 / sizeof(void*)];
 
 static inline unsigned int tsd_hash(long tid)
 {
-	/* Simple multiplicative hash; collisions resolved by linear probing. */
-	return (unsigned int)((tid * 2654435761u) & (TSD_TABLE_SIZE - 1));
+	/* Multiplicative (Fibonacci) hash using the top bits of the product; collisions
+	 * are resolved by linear probing. The low bits of the product would only depend on
+	 * the low bits of the thread pointer, and those are the same for every thread with
+	 * the same stack size (glibc puts it at a fixed offset in a page-aligned mapping),
+	 * which piled all such threads into one bucket. */
+	return (unsigned int)(((unsigned long)tid * 0x9E3779B97F4A7C15ul) >> (64 - TSD_TABLE_BITS));
 }
 
 /* Use the Linux thread pointer (TPIDR_EL0) as the thread identity. It's a
@@ -45,34 +50,30 @@ static inline long current_tid(void)
 	return (long)__builtin_thread_pointer();
 }
 
-/* Single-entry cache. gettid() is a Linux syscall and we are called *very*
- * frequently (every errno read, every pthread_self()), so an uncached path
- * burns the process at ~100% CPU on a syscall trampoline. The cache is
- * deliberately not __thread (we cannot rely on TLV in dyld) — it's a regular
- * global. Concurrent readers/writers race harmlessly: a stale tid means we
- * fall through to the slow path and refresh. */
-static volatile long  tsd_cache_tid;
-static void* volatile tsd_cache_base = (void*)0; /* unused before first set */
-
+/* There is deliberately no global "last lookup" cache: a tid/base pair kept in
+ * two shared variables can be torn by another thread between the two reads,
+ * handing this thread another thread's TSD (errno, pthread_self, pthread keys,
+ * thread-local variables). current_tid() costs no syscall, so the table lookup
+ * (usually one probe) is cheap enough on its own.
+ *
+ * Each entry is only ever read and written by its own thread; the only shared
+ * step is claiming an empty slot, which uses compare-and-swap. */
 __attribute__((visibility("default")))
 void* sys_thread_get_tsd_base(void)
 {
 	long tid = current_tid();
-	/* Fast path: hits when the same thread keeps calling us (common
-	 * during single-threaded dyld init and launchd setup). */
-	if (tid == tsd_cache_tid && tsd_cache_base != (void*)0)
-		return tsd_cache_base;
-
 	unsigned int i = tsd_hash(tid);
 	for (unsigned int step = 0; step < TSD_TABLE_SIZE; step++)
 	{
 		struct tsd_entry* e = &tsd_table[(i + step) & (TSD_TABLE_SIZE - 1)];
-		if (e->tid == tid) {
-			tsd_cache_tid = tid;
-			tsd_cache_base = e->base;
-			return e->base;
+		long entry_tid = e->tid;
+		if (entry_tid == tid) {
+			/* base is still NULL if this thread is inside tsd_set() between claiming
+			 * the slot and storing it (e.g. a signal handler running in between). */
+			void* base = e->base;
+			return base ? base : tsd_zero_page;
 		}
-		if (e->tid == 0)
+		if (entry_tid == 0)
 			break;
 	}
 	return tsd_zero_page;
@@ -84,18 +85,32 @@ static void tsd_set(long tid, void* base)
 	for (unsigned int step = 0; step < TSD_TABLE_SIZE; step++)
 	{
 		struct tsd_entry* e = &tsd_table[(i + step) & (TSD_TABLE_SIZE - 1)];
-		if (e->tid == 0 || e->tid == tid)
+		if (e->tid == tid || __sync_bool_compare_and_swap(&e->tid, 0, tid))
 		{
 			e->base = base;
-			e->tid = tid;
-			/* Warm the fast path so the next get on this tid is O(1). */
-			tsd_cache_base = base;
-			tsd_cache_tid = tid;
 			return;
 		}
 	}
 	/* Table full; this would only happen with > 1024 concurrent threads.
 	 * Real Darwin TSD never spills, so behavior is undefined here. */
+}
+
+/* Whether the calling thread has a TSD base registered in this copy of the table
+ * (dyld links a separate static copy). Only lkm.c uses it, so it stays out of
+ * libsystem_kernel's exports. */
+bool sys_thread_has_tsd_base(void)
+{
+	long tid = current_tid();
+	unsigned int i = tsd_hash(tid);
+	for (unsigned int step = 0; step < TSD_TABLE_SIZE; step++)
+	{
+		long entry_tid = tsd_table[(i + step) & (TSD_TABLE_SIZE - 1)].tid;
+		if (entry_tid == tid)
+			return true;
+		if (entry_tid == 0)
+			break;
+	}
+	return false;
 }
 #endif
 

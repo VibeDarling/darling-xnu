@@ -25,7 +25,9 @@ struct SavedRef
 };
 
 #define MOUNT_ID_SAVED (-100)
-static struct SavedRef g_savedRefs[200];
+// Every FSRef made in this process takes a slot (see sys_name_to_handle); the oldest is reused
+// once the table is full, and references to a reused slot fail the generation check.
+static struct SavedRef g_savedRefs[1024];
 static int g_nextSavedRef = 0, g_nextGen = 0;
 static os_unfair_lock g_savedRefLock = OS_UNFAIR_LOCK_INIT;
 
@@ -41,25 +43,38 @@ int sys_name_to_handle(const char* name, RefData* ref, int follow)
 	vc.flags = follow ? VCHROOT_FOLLOW : 0;
 	vc.dfd = get_perthread_wd();
 
+	if (strlen(name) >= sizeof(vc.path))
+		return -ENAMETOOLONG;
+
 	strcpy(vc.path, name);
 	ret = vchroot_expand(&vc);
 	if (ret < 0)
 		return errno_linux_to_bsd(ret);
 
-	ref->fh.handle_bytes = sizeof(RefData) - offsetof(RefData, fh.f_handle);
+	// A kernel file handle (name_to_handle_at) can't be turned back into a path without the Darling
+	// kernel module, which no longer exists, and overlayfs often can't produce one anyway. So every
+	// reference remembers its path, after checking that it exists (without following a leaf
+	// symlink unless asked to; the stat buffer is larger than any Linux struct stat).
+	char st_buf[256];
+#if defined(__NR_newfstatat)
+	ret = LINUX_SYSCALL(__NR_newfstatat, LINUX_AT_FDCWD, vc.path, st_buf, follow ? 0 : LINUX_AT_SYMLINK_NOFOLLOW);
+#else
+	ret = LINUX_SYSCALL(__NR_fstatat64, LINUX_AT_FDCWD, vc.path, st_buf, follow ? 0 : LINUX_AT_SYMLINK_NOFOLLOW);
+#endif
 
-	ret = LINUX_SYSCALL(__NR_name_to_handle_at, LINUX_AT_FDCWD, vc.path, &ref->fh, &ref->mount_id, 0);
-
-	// This is unfortunately the case for overlayfs, which doesn't support "nfs_export" along with "metacopy"
-	if (ret == -LINUX_EOPNOTSUPP && sys_access(name, 0) == 0)
+	if (ret == 0)
 	{
+		char* saved = strdup(name);
+		if (saved == NULL)
+			return -ENOMEM;
+
 		os_unfair_lock_lock(&g_savedRefLock);
 
 		if (g_savedRefs[g_nextSavedRef].path)
 			free(g_savedRefs[g_nextSavedRef].path);
 
 		ref->gen = g_nextGen++;
-		g_savedRefs[g_nextSavedRef].path = strdup(name);
+		g_savedRefs[g_nextSavedRef].path = saved;
 		g_savedRefs[g_nextSavedRef].gen = ref->gen;
 		ref->mount_id = MOUNT_ID_SAVED;
 		ref->index = g_nextSavedRef;
@@ -85,7 +100,9 @@ int sys_handle_to_name(RefData* ref, char name[4096])
 		int ret = -ENOENT;
 		os_unfair_lock_lock(&g_savedRefLock);
 
-		if (g_savedRefs[ref->index].gen == ref->gen)
+		// An FSRef is caller memory: check the index before using it.
+		if (ref->index >= 0 && ref->index < (int)(sizeof(g_savedRefs) / sizeof(g_savedRefs[0]))
+			&& g_savedRefs[ref->index].path != NULL && g_savedRefs[ref->index].gen == ref->gen)
 		{
 			strlcpy(name, g_savedRefs[ref->index].path, 4096);
 			ret = sys_access(name, 0);
@@ -95,79 +112,10 @@ int sys_handle_to_name(RefData* ref, char name[4096])
 		return ret;
 	}
 
-	// Now we need to find out the path of ref->mount_id
-	struct simple_readline_buf rbuf;
-	char line[1024];
-
-	int fd_m = sys_open("/proc/self/mountinfo", BSD_O_RDONLY, 0);
-	if (fd_m < 0)
-		return fd_m;
-	const char* mount_path = NULL;
-	
-	__simple_readline_init(&rbuf);
-
-	while (__simple_readline(fd_m, &rbuf, line, sizeof(line)))
-	{
-		char *p, *saveptr;
-
-		p = strtok_r(line, " ", &saveptr);
-		if (p == NULL)
-			continue;
-
-		if (__simple_atoi(p, NULL) != ref->mount_id)
-			continue;
-
-		for (int i = 0; i < 4; i++)
-		{
-			p = strtok_r(NULL, " ", &saveptr);
-			if (p == NULL)
-			{
-				close_internal(fd_m);
-				return -ENOENT;
-			}
-		}
-
-		mount_path = p;
-
-		break;
-	}
-
-	close_internal(fd_m);
-
-	if (mount_path == NULL)
-		return -ENOENT;
-	
-	// We have the path of the mount, lets get a file descriptor
-	#if defined(__NR_open)
-		fd_m = LINUX_SYSCALL(__NR_open, mount_path, LINUX_O_RDONLY, 0);
-	#else
-		fd_m = LINUX_SYSCALL(__NR_openat, LINUX_AT_FDCWD, mount_path, LINUX_O_RDONLY, 0);
-	#endif
-	if (fd_m < 0)
-		return fd_m;
-
-	struct handle_to_path_args args;
-	args.mfd = fd_m;
-	memcpy(args.fh, &ref->fh, sizeof(RefData) - offsetof(RefData, fh));
-
-	int ret = lkm_call(NR_handle_to_path, &args);
-
-	close_internal(fd_m);
-
-	if (ret < 0)
-		return errno_linux_to_bsd(ret);
-
-	struct vchroot_unexpand_args uargs;
-	strcpy(uargs.path, args.path);
-
-	ret = vchroot_unexpand(&uargs);
-
-	if (ret < 0)
-		return errno_linux_to_bsd(ret);
-
-	strcpy(name, uargs.path);
-
-	return 0;
+	// sys_name_to_handle() only hands out saved references. Turning a kernel file handle back into a
+	// path needed the Darling kernel module's NR_handle_to_path call, which no longer exists (calling
+	// it trapped with "Something called the old LKM API"), so any other reference can't be resolved.
+	return -ENOENT;
 }
 
 // Requires CAP_DAC_READ_SEARCH
