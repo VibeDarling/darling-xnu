@@ -494,7 +494,13 @@ void sigexc_handler(int linux_signum, struct linux_siginfo* info, struct linux_u
 
 	state_to_kernel(ctxt, &tstate, &fstate);
 
-	if (linux_signum == LINUX_SIGTRAP && (info->si_code == 1 || info->si_code == 128)) {
+	// info is NULL for signals the kernel raises itself rather than delivering
+	// from another process, so its fields cannot be read unconditionally.
+	int sig_pid = info ? info->si_pid : 0;
+	int sig_code = info ? info->si_code : 0;
+	unsigned long long sig_addr = info ? (unsigned long long) info->si_addr : 0;
+
+	if (info != NULL && linux_signum == LINUX_SIGTRAP && (sig_code == 1 || sig_code == 128)) {
 		/*
 		 * CRITICAL: When a TRAP_BRKPT (int3) occurs, Linux leaves the instruction
 		 * pointer (RIP/EIP) pointing to the byte AFTER the int3 instruction.
@@ -510,7 +516,7 @@ void sigexc_handler(int linux_signum, struct linux_siginfo* info, struct linux_u
 #endif
 	}
 
-	int ret = dserver_rpc_sigprocess(bsd_signum, linux_signum, info->si_pid, info->si_code, info->si_addr, &tstate, &fstate, &bsd_signum);
+	int ret = dserver_rpc_sigprocess(bsd_signum, linux_signum, sig_pid, sig_code, (void *) sig_addr, &tstate, &fstate, &bsd_signum);
 	if (ret < 0 && is_server_gone(ret)) {
 		exit_server_gone();
 	}
