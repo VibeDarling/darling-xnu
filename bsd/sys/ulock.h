@@ -117,8 +117,13 @@ extern int __ulock_wake(uint32_t operation, void *addr, uint64_t wake_value);
 
 /*
  * operation bits [31, 24] contain the generic flags
+ *
+ * @const ULF_DEADLINE
+ * put timeout - if specified - is a deadline specified in mach absolute
+ * time units
  */
 #define ULF_NO_ERRNO                    0x01000000
+#define ULF_DEADLINE                    0x02000000
 
 /*
  * masks
@@ -127,7 +132,7 @@ extern int __ulock_wake(uint32_t operation, void *addr, uint64_t wake_value);
 #define UL_FLAGS_MASK           0xFFFFFF00
 #define ULF_GENERIC_MASK        0xFFFF0000
 
-#define ULF_WAIT_MASK           (ULF_NO_ERRNO | \
+#define ULF_WAIT_MASK           (ULF_NO_ERRNO | ULF_DEADLINE | \
 	                         ULF_WAIT_WORKQ_DATA_CONTENTION | \
 	                         ULF_WAIT_CANCEL_POINT | ULF_WAIT_ADAPTIVE_SPIN)
 

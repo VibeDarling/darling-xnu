@@ -347,4 +347,8 @@ typedef void (^os_block_t)(void);
 #define XNU_PTRAUTH_SIGNED_PTR OS_PTRAUTH_SIGNED_PTR
 #endif // KERNEL_PRIVATE
 
+#ifndef OS_SWIFT_UNAVAILABLE_FROM_ASYNC
+#define OS_SWIFT_UNAVAILABLE_FROM_ASYNC(msg)
+#endif
+
 #endif // __OS_BASE__
