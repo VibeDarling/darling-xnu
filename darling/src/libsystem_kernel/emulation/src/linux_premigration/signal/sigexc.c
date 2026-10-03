@@ -190,6 +190,7 @@ static void rpc_failed_in_handler(const char* what, int status)
 
 void sigrt_handler(int signum, struct linux_siginfo* info, struct linux_ucontext* ctxt)
 {
+
 	int status = dserver_rpc_interrupt_enter();
 
 	if (status != 0) {
@@ -353,6 +354,70 @@ void sigexc_handler(int linux_signum, struct linux_siginfo* info, struct linux_u
             && emulate_darling_tsd_read(ctxt) )
         return;
 #endif
+	// Re-entrancy guard. The first thing this handler does is enter a server RPC,
+	// which takes duct-tape mutexes. A thread running inside a signal handler has
+	// no registered dtape thread, so dtape_mutex_lock takes its fallback path
+	// (duct-tape/src/locks.c) and spins waiting for an owner to drop the lock. If
+	// anything inside the handler faults, the kernel reinvokes the handler, which
+	// spins again - and with both threads in that state the spin never ends.
+	//
+	// That was observed turning a single guest SIGSEGV into ~30 nested handler
+	// entries and ~3000 "Trying to lock mutex without an active thread!"
+	// warnings across two threads, which destroyed the original crash's stack: the
+	// cores only ever showed the signal trampoline.
+	//
+	// One entry per thread is allowed. A fault while already inside the handler
+	// cannot be reported through the same path, so kill the thread outright: the
+	// process still dies, but the core describes the first fault instead of the
+	// livelock.
+	//
+	// Only for signals that are themselves a fault. A benign re-entry - a SIGWINCH
+	// delivered while the handler is already running, which happens during normal
+	// startup - must not take the thread down with it.
+	static __thread bool in_sigexc_handler = false;
+	static __thread int in_sigexc_handler_signal = 0;
+
+	if (in_sigexc_handler) {
+		bool nested_is_fault =
+				linux_signum == LINUX_SIGSEGV || linux_signum == LINUX_SIGBUS ||
+				linux_signum == LINUX_SIGILL || linux_signum == LINUX_SIGFPE ||
+				linux_signum == LINUX_SIGSYS || linux_signum == LINUX_SIGTRAP;
+
+		if (nested_is_fault) {
+			kern_printf("sigexc: fault (%d) inside the handler for signal %d, killing this thread\n",
+					linux_signum, in_sigexc_handler_signal);
+
+			// Report where it faulted before killing the thread. Without this the
+			// register state is lost with the process and the nested fault - the
+			// one that actually matters - stays as invisible as it was before the
+			// guard existed. The usual dump further down is never reached, because
+			// that path would block on the same RPC that faulted.
+#if defined(__x86_64__)
+			if (ctxt)
+				kern_printf("sigexc: nested fault at RIP 0x%llx\n",
+					(unsigned long long)ctxt->uc_mcontext.gregs.rip);
+#elif defined(__aarch64__) || defined(__arm64__)
+			if (ctxt)
+				kern_printf("sigexc: nested fault at PC 0x%llx, fault_addr 0x%llx, SP 0x%llx\n",
+					(unsigned long long)ctxt->uc_mcontext.gregs.pc,
+					(unsigned long long)ctxt->uc_mcontext.gregs.fault_address,
+					(unsigned long long)ctxt->uc_mcontext.gregs.sp);
+#elif defined(__i386__)
+			if (ctxt)
+				kern_printf("sigexc: nested fault at EIP 0x%llx\n",
+					(unsigned long long)ctxt->uc_mcontext.gregs.eip);
+#endif
+
+			LINUX_SYSCALL(__NR_exit_group, 128 + LINUX_SIGKILL);
+			// exit_group does not return.
+		}
+
+		// Not a fault: fall through and let the nested signal be handled.
+	} else {
+		in_sigexc_handler = true;
+		in_sigexc_handler_signal = linux_signum;
+	}
+
 	int status = dserver_rpc_interrupt_enter();
 
 	if (status != 0) {
@@ -429,7 +494,13 @@ void sigexc_handler(int linux_signum, struct linux_siginfo* info, struct linux_u
 
 	state_to_kernel(ctxt, &tstate, &fstate);
 
-	if (linux_signum == LINUX_SIGTRAP && (info->si_code == 1 || info->si_code == 128)) {
+	// info is NULL for signals the kernel raises itself rather than delivering
+	// from another process, so its fields cannot be read unconditionally.
+	int sig_pid = info ? info->si_pid : 0;
+	int sig_code = info ? info->si_code : 0;
+	unsigned long long sig_addr = info ? (unsigned long long) info->si_addr : 0;
+
+	if (info != NULL && linux_signum == LINUX_SIGTRAP && (sig_code == 1 || sig_code == 128)) {
 		/*
 		 * CRITICAL: When a TRAP_BRKPT (int3) occurs, Linux leaves the instruction
 		 * pointer (RIP/EIP) pointing to the byte AFTER the int3 instruction.
@@ -445,7 +516,7 @@ void sigexc_handler(int linux_signum, struct linux_siginfo* info, struct linux_u
 #endif
 	}
 
-	int ret = dserver_rpc_sigprocess(bsd_signum, linux_signum, info->si_pid, info->si_code, info->si_addr, &tstate, &fstate, &bsd_signum);
+	int ret = dserver_rpc_sigprocess(bsd_signum, linux_signum, sig_pid, sig_code, (void *) sig_addr, &tstate, &fstate, &bsd_signum);
 	if (ret < 0 && is_server_gone(ret)) {
 		exit_server_gone();
 	}
