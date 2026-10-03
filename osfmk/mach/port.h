@@ -151,6 +151,10 @@ struct ipc_port;
 
 typedef struct ipc_port         *ipc_port_t;
 
+#ifndef __unsafe_forge_single
+#define __unsafe_forge_single(t, v) ((t)(v))
+#endif
+
 #define IPC_PORT_NULL           __unsafe_forge_single(ipc_port_t, NULL)
 #define IPC_PORT_DEAD           __unsafe_forge_single(ipc_port_t, ~0UL)
 #define IPC_PORT_VALID(port)    ipc_port_valid(port)
