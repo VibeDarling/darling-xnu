@@ -11,6 +11,10 @@
 #include <darling/emulation/linux_premigration/ext/sys/utsname.h>
 #include <darling/emulation/common/simple.h>
 #include <darling/emulation/common/string.h>
+#include <darling/emulation/xnu_syscall/bsd/helper/misc/readline.h>
+#include <darling/emulation/xnu_syscall/bsd/impl/fcntl/open.h>
+#include <darling/emulation/xnu_syscall/bsd/impl/unistd/close.h>
+#include <darling/emulation/conversion/fcntl/open.h>
 
 extern kern_return_t mach_port_deallocate(ipc_space_t task, mach_port_name_t name);
 extern kern_return_t host_info(mach_port_name_t host, int itype, void* hinfo, mach_msg_type_number_t* count);
@@ -25,6 +29,7 @@ enum {
 	_HW_CPUSUBTYPE,
 	_HW_CPUTHREADTYPE,
 	_HW_64BITCAPABLE,
+	_HW_PACKAGES,
 	_HW_CPUFREQUENCY = 15,
 };
 
@@ -42,6 +47,7 @@ static sysctl_handler(handle_cpu64bitcapable);
 static sysctl_handler(handle_machine);
 static sysctl_handler(handle_cpufrequency);
 static sysctl_handler(handle_cachelinesize);
+static sysctl_handler(handle_packages);
 
 const struct known_sysctl sysctls_hw[] = {
 	{ .oid = HW_AVAILCPU, .type = CTLTYPE_INT, .exttype = "", .name = "availcpu", .handler = handle_availcpu },
@@ -59,6 +65,7 @@ const struct known_sysctl sysctls_hw[] = {
 	{ .oid = HW_MACHINE, .type = CTLTYPE_STRING, .exttype = "S", .name = "machine", .handler = handle_machine },
 	{ .oid = _HW_CPUFREQUENCY, .type = CTLTYPE_INT, .exttype = "", .name = "cpufrequency", .handler = handle_cpufrequency },
 	{ .oid = HW_CACHELINE, .type = CTLTYPE_QUAD, .exttype = "U", .name = "cachelinesize", .handler = handle_cachelinesize },
+	{ .oid = _HW_PACKAGES, .type = CTLTYPE_INT, .exttype = "I", .name = "packages", .handler = handle_packages },
 	{ .oid = -1 }
 };
 
@@ -208,4 +215,40 @@ sysctl_handler(handle_cachelinesize)
 	sysctl_handle_size(sizeof(unsigned long long));
 	*((unsigned long long*) old) = 64;
 	return 0;
+}
+
+sysctl_handler(handle_packages)
+{
+    if (!oldlen) return -EINVAL;
+    if (_new) return -EPERM;
+    sysctl_handle_size(sizeof(uint32_t));
+    int fd = sys_open_nocancel("/proc/cpuinfo", BSD_O_RDONLY, 0);
+    if (fd < 0) return fd;
+    uint32_t packages[256];
+    uint32_t count = 0;
+    struct rdline_buffer rbuf;
+    _readline_init(&rbuf);
+    const char* line;
+    while ((line = _readline(fd, &rbuf)) != NULL) {
+        if (strncmp(line, "physical id", 11) != 0) continue;
+        const char* value = line + 11;
+        while (*value && *value != ':') ++value;
+        if (!*value) continue;
+        ++value;
+        while (*value == ' ' || *value == '\t') ++value;
+        uint32_t package = __simple_atoi(value, NULL);
+        uint32_t i;
+        for (i = 0; i < count && packages[i] != package; ++i) {}
+        if (i == count) {
+            if (count == sizeof(packages) / sizeof(packages[0])) {
+                close_internal(fd);
+                return -EOVERFLOW;
+            }
+            packages[count++] = package;
+        }
+    }
+    close_internal(fd);
+    /* Architectures without a physical-id field describe one package. */
+    *(uint32_t*)old = count ? count : 1;
+    return 0;
 }
