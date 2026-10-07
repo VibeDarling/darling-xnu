@@ -1,6 +1,6 @@
 #include <darling/emulation/xnu_syscall/bsd/impl/audit/audit_addr.h>
 
-#include <os/lock.h>
+#include <libsimple/lock.h>
 
 #include <darling/emulation/xnu_syscall/bsd/impl/unistd/geteuid.h>
 #include <darling/emulation/xnu_syscall/bsd/impl/misc/getentropy.h>
@@ -18,7 +18,7 @@ static auditinfo_addr_t info = {
 	.ai_flags = 0,
 };
 // should be a rw lock but *shrug*
-static os_unfair_lock info_lock = OS_UNFAIR_LOCK_INIT;
+static libsimple_lock_t info_lock = LIBSIMPLE_LOCK_INITIALIZER;
 
 // BSM audit condition, as auditon(2)'s GETCOND/SETCOND report it. Darling
 // never writes audit records, so it starts out and stays AUC_DISABLED unless a
@@ -26,16 +26,16 @@ static os_unfair_lock info_lock = OS_UNFAIR_LOCK_INIT;
 static int audit_condition = AUC_DISABLED;
 
 long sys_getaudit_addr(struct auditinfo_addr* auditinfo_addr, int length) {
-	os_unfair_lock_lock(&info_lock);
+	libsimple_lock_lock(&info_lock);
 
 	memcpy(auditinfo_addr, &info, min(length, sizeof(auditinfo_addr_t)));
 
-	os_unfair_lock_unlock(&info_lock);
+	libsimple_lock_unlock(&info_lock);
 	return 0;
 };
 
 long sys_setaudit_addr(struct auditinfo_addr* auditinfo_addr, int length) {
-	os_unfair_lock_lock(&info_lock);
+	libsimple_lock_lock(&info_lock);
 
 	memcpy(&info, auditinfo_addr, min(length, sizeof(auditinfo_addr_t)));
 
@@ -44,31 +44,31 @@ long sys_setaudit_addr(struct auditinfo_addr* auditinfo_addr, int length) {
 		sys_getentropy(&info.ai_asid, sizeof(info.ai_asid));
 	}
 
-	os_unfair_lock_unlock(&info_lock);
+	libsimple_lock_unlock(&info_lock);
 	return 0;
 };
 
 void audit_session_set_mask(au_mask_t mask) {
-	os_unfair_lock_lock(&info_lock);
+	libsimple_lock_lock(&info_lock);
 	info.ai_mask = mask;
-	os_unfair_lock_unlock(&info_lock);
+	libsimple_lock_unlock(&info_lock);
 }
 
 void audit_session_set_auid(au_id_t auid) {
-	os_unfair_lock_lock(&info_lock);
+	libsimple_lock_lock(&info_lock);
 	info.ai_auid = auid;
-	os_unfair_lock_unlock(&info_lock);
+	libsimple_lock_unlock(&info_lock);
 }
 
 void audit_session_set_condition(int condition) {
-	os_unfair_lock_lock(&info_lock);
+	libsimple_lock_lock(&info_lock);
 	audit_condition = condition;
-	os_unfair_lock_unlock(&info_lock);
+	libsimple_lock_unlock(&info_lock);
 }
 
 int audit_session_get_condition(void) {
-	os_unfair_lock_lock(&info_lock);
+	libsimple_lock_lock(&info_lock);
 	int condition = audit_condition;
-	os_unfair_lock_unlock(&info_lock);
+	libsimple_lock_unlock(&info_lock);
 	return condition;
 }
