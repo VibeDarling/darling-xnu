@@ -7,6 +7,7 @@
 #include <darling/emulation/other/mach/lkm.h>
 #include <darling/emulation/common/simple.h>
 #include <darling/emulation/common/guarded/table.h>
+#include <darling/emulation/xnu_syscall/bsd/helper/network/nosigpipe.h>
 #include <_libkernel_init.h>
 
 extern _libkernel_functions_t _libkernel_functions;
@@ -39,6 +40,7 @@ long sys_close_nocancel(int fd)
 	if (ret < 0)
 		ret = errno_linux_to_bsd(ret);
 	else {
+		nosigpipe_closed(fd);
 		if (_libkernel_functions && _libkernel_functions->kqueue_closed_fd)
 			_libkernel_functions->kqueue_closed_fd(fd);
 	}

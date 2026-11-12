@@ -27,6 +27,7 @@
 #include <stdbool.h>
 
 #include <darling-config.h>
+#include <darling/emulation/other/mach/lkm.h>
 
 enum {
 	_KERN_MSGBUF = 1000,
@@ -367,7 +368,9 @@ sysctl_handler(handle_usrstack64)
 }
 
 static sysctl_handler(handle_osproductversion) {
-	copyout_string(EMULATED_OSPRODUCTVERSION, (char*)old, oldlen);
+	// As on iOS, an iOS app sees the iOS version here, not the macOS one; apps (Rust's std,
+	// for one) answer #available from this, and must not take paths for iOS APIs Darling lacks.
+	copyout_string(mach_driver_main_is_ios() ? EMULATED_IOS_OSPRODUCTVERSION : EMULATED_OSPRODUCTVERSION, (char*)old, oldlen);
 	return 0;
 };
 

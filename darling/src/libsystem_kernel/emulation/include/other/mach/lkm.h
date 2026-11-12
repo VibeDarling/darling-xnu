@@ -2,6 +2,7 @@
 #define _LKM_H
 
 #include <os/tsd.h>
+#include <stdbool.h>
 
 #define DARLING_MACH_API_BASE		0x1000
 enum { NR_get_api_version = DARLING_MACH_API_BASE,
@@ -94,5 +95,7 @@ void mach_driver_init(const char** applep);
 int lkm_call(int call_nr, void* arg);
 int lkm_call_raw(int call_nr, void* arg); // w/o errno translation
 int mach_driver_get_fd(void);
+// Whether the main executable is an iOS one (the platform dyld recorded for it).
+bool mach_driver_main_is_ios(void);
 
 #endif // _LKM_H

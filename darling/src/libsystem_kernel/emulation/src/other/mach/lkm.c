@@ -5,6 +5,7 @@
 #include <unistd.h>
 #include <sys/resource.h>
 #include <_libkernel_init.h>
+#include <mach-o/dyld_images.h>
 
 #include <darling/emulation/linux_premigration/signal/sigexc.h>
 #include <darling/emulation/common/base.h>
@@ -212,4 +213,19 @@ voucher_mach_msg_state_t voucher_mach_msg_adopt(mach_msg_header_t *msg)
 {
 	// UNIMPLEMENTED_TRAP();
 	return NULL;
+}
+
+bool mach_driver_main_is_ios(void)
+{
+	static int ios = -1;
+	if (ios < 0) {
+		const struct dyld_all_image_infos* (*get_infos)(void) = NULL;
+		if (_libkernel_functions && _libkernel_functions->dyld_func_lookup)
+			_libkernel_functions->dyld_func_lookup("__dyld_get_all_image_infos", (void**)&get_infos);
+		const struct dyld_all_image_infos* infos = get_infos ? get_infos() : NULL;
+		if (!infos)
+			return false; // too early (dyld itself, or before libSystem's initializer): ask again later
+		ios = infos->version >= 16 && infos->platform == 2 /* PLATFORM_IOS */;
+	}
+	return ios;
 }

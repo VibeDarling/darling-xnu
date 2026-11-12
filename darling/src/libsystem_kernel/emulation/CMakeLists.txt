@@ -9,6 +9,9 @@ set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -nostdlib")
 # This controls only kern.osproductversion, not the parent SystemVersion.plist.
 set(DARLING_EMULATED_OS_PRODUCT_VERSION "26.0" CACHE STRING
 	"Product version returned by kern.osproductversion (requires rebuilding libsystem_kernel)")
+# What iOS executables get instead: the version UIDevice's systemVersion presents.
+set(DARLING_EMULATED_IOS_PRODUCT_VERSION "14.0" CACHE STRING
+	"Product version returned by kern.osproductversion to iOS executables (requires rebuilding libsystem_kernel)")
 
 add_definitions(-DBSDTHREAD_WRAP_LINUX_PTHREAD
 	-DEMULATED_SYSNAME="Darwin"
@@ -16,6 +19,7 @@ add_definitions(-DBSDTHREAD_WRAP_LINUX_PTHREAD
 	-DEMULATED_VERSION="Darwin Kernel Version 25.0.0"
 	-DEMULATED_OSVERSION="20G1120"
 	-DEMULATED_OSPRODUCTVERSION="${DARLING_EMULATED_OS_PRODUCT_VERSION}"
+	-DEMULATED_IOS_OSPRODUCTVERSION="${DARLING_EMULATED_IOS_PRODUCT_VERSION}"
 )
 
 # include src/startup for rtsig.h
@@ -112,6 +116,7 @@ set(xnu_syscall_bsd_sources
 	src/xnu_syscall/bsd/helper/misc/sysctl_unspec.c
 	src/xnu_syscall/bsd/helper/misc/sysctl_vm.c
 	src/xnu_syscall/bsd/helper/network/duct.c
+	src/xnu_syscall/bsd/helper/network/nosigpipe.c
 
 	src/xnu_syscall/bsd/impl/audit/audit_addr.c
 	src/xnu_syscall/bsd/impl/audit/auditon.c

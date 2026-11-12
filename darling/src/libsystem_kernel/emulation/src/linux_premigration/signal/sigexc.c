@@ -19,6 +19,9 @@
 #include <darling/emulation/common/simple.h>
 #include <darling/emulation/common/tsd.h>
 #include <darling/emulation/xnu_syscall/machdep/impl/tls.h>
+#include <darling/emulation/xnu_syscall/bsd/bsd_syscall_table.h>
+#include <darling/emulation/xnu_syscall/mach/mach_syscall_table.h>
+#include <mach/message.h>
 
 #include <darlingserver/rpc.h>
 
@@ -347,6 +350,102 @@ static bool emulate_darling_tsd_read(struct linux_ucontext* ctxt)
     return true;
 }
 
+// Code that calls the kernel itself, with SVC #0x80 and the Darwin number in x16
+// instead of through libSystem. Linux reads the number from x8, which here holds
+// anything; Android's seccomp filter answers an unknown one with SIGSYS, and this
+// signal is how such a call gets to Darling. Where x8 happens to name a syscall the
+// filter allows, Linux runs that one and nothing here can tell. Without a filter,
+// the caller sees ENOSYS from Linux.
+//
+// The emulated call may block or talk to darlingserver, so it does not run in the
+// signal handler: the thread returns to darling_svc_thunk on its own stack, and a
+// private UDF brings it back here to resume with the registers it had, as the
+// kernel would have left them, but for x0 and the carry flag.
+#define DARLING_SVC_INSTRUCTION 0xD4001001U // SVC #0x80
+#define DARLING_SVC_RETURN      0x0000DA20U // UDF #0xda20, past the TSD read's range
+#define DARLING_SVC_RED_ZONE    128         // Darwin's, which the caller may be using
+#define PSTATE_C                (1ULL << 29)
+
+struct darling_svc_frame
+{
+    struct linux_gregset regs;
+    struct linux_fpsimd_context fpsimd;
+};
+
+void darling_svc_thunk(void);
+
+__asm__(
+    ".text\n"
+    ".p2align 2\n"
+    "_darling_svc_thunk:\n"
+    "    mov  x0, sp\n"
+    "    bl   _darling_svc_dispatch\n"
+    "    .long 0x0000DA20\n"
+);
+
+__attribute__((used))
+void darling_svc_dispatch(struct darling_svc_frame* frame)
+{
+    unsigned long long* x = frame->regs.regs;
+    const int number = (int)x[16];
+    long (*call)(unsigned long long, unsigned long long, unsigned long long, unsigned long long,
+                 unsigned long long, unsigned long long, unsigned long long, unsigned long long) = NULL;
+
+    __simple_kprintf("sigexc: raw svc %d\n", number);
+
+    if (number < 0)
+    {
+        // Mach traps return a kern_return_t, and leave the flags alone.
+        if (-number < 128)
+            call = __mach_syscall_table[-number];
+        x[0] = call ? call(x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7]) : MACH_SEND_INVALID_DEST;
+        return;
+    }
+
+    if (number < 600)
+        call = __bsd_syscall_table[number];
+    const long result = call ? call(x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7]) : __unknown_syscall(number);
+
+    if ((unsigned long)result >= (unsigned long)-4095)
+    {
+        x[0] = -result;
+        frame->regs.pstate |= PSTATE_C;
+    }
+    else
+    {
+        x[0] = result;
+        frame->regs.pstate &= ~PSTATE_C;
+    }
+}
+
+static bool enter_darling_svc(struct linux_ucontext* ctxt)
+{
+    struct linux_gregset* regs = &ctxt->uc_mcontext.gregs;
+    if ( *(const uint32_t*)(regs->pc - sizeof(uint32_t)) != DARLING_SVC_INSTRUCTION )
+        return false;
+
+    const uintptr_t sp = (regs->sp - DARLING_SVC_RED_ZONE - sizeof(struct darling_svc_frame)) & ~(uintptr_t)15;
+    struct darling_svc_frame* frame = (struct darling_svc_frame*)sp;
+    __builtin_memcpy(&frame->regs, regs, sizeof(*regs));
+    __builtin_memcpy(&frame->fpsimd, ctxt->uc_mcontext.__reserved, sizeof(frame->fpsimd));
+
+    regs->sp = sp;
+    regs->pc = (uintptr_t)&darling_svc_thunk;
+    return true;
+}
+
+static bool leave_darling_svc(struct linux_ucontext* ctxt)
+{
+    struct linux_gregset* regs = &ctxt->uc_mcontext.gregs;
+    if ( *(const uint32_t*)regs->pc != DARLING_SVC_RETURN )
+        return false;
+
+    const struct darling_svc_frame* frame = (const struct darling_svc_frame*)regs->sp;
+    __builtin_memcpy(ctxt->uc_mcontext.__reserved, &frame->fpsimd, sizeof(frame->fpsimd));
+    __builtin_memcpy(regs, &frame->regs, sizeof(*regs));
+    return true;
+}
+
 #endif
 
 void sigexc_handler(int linux_signum, struct linux_siginfo* info, struct linux_ucontext* ctxt)
@@ -355,6 +454,12 @@ void sigexc_handler(int linux_signum, struct linux_siginfo* info, struct linux_u
     // Consume the emulated register read before RPC and Mach exception delivery.
     if ( linux_signum == LINUX_SIGILL && info && info->si_code > 0
             && emulate_darling_tsd_read(ctxt) )
+        return;
+    if ( linux_signum == LINUX_SIGILL && info && info->si_code > 0
+            && leave_darling_svc(ctxt) )
+        return;
+    if ( linux_signum == LINUX_SIGSYS && info && info->si_code == 1 /* SYS_SECCOMP */
+            && enter_darling_svc(ctxt) )
         return;
 #endif
 	// Re-entrancy guard. The first thing this handler does is enter a server RPC,

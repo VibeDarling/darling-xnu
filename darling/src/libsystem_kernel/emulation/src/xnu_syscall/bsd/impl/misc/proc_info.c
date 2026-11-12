@@ -99,7 +99,7 @@ long sys_proc_info(uint32_t callnum, int32_t pid, uint32_t flavor,
 			return _proc_listpids(pid, flavor, buffer, bufsize);
 		case 3: // proc_pidfdinfo
 		default:
-			__simple_printf("sys_proc_info(): Unsupported callnum: %d\n",
+			__simple_fprintf(2, "sys_proc_info(): Unsupported callnum: %d\n",
 					callnum);
 			return -ENOTSUP;
 	}
@@ -262,7 +262,7 @@ long _proc_pidinfo(int32_t pid, uint32_t flavor, uint64_t arg, void* buffer, int
 		}
 		default:
 		{
-			__simple_printf("sys_proc_info(): Unsupported pidinfo flavor: %d\n",
+			__simple_fprintf(2, "sys_proc_info(): Unsupported pidinfo flavor: %d\n",
 					flavor);
 			return -ENOTSUP;
 		}

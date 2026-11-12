@@ -11,6 +11,7 @@
 #include <darling/emulation/linux_premigration/linux-syscalls/linux.h>
 #include <darling/emulation/xnu_syscall/bsd/helper/bsdthread/cancelable.h>
 #include <darling/emulation/xnu_syscall/bsd/helper/misc/fdpath.h>
+#include <darling/emulation/xnu_syscall/bsd/helper/network/nosigpipe.h>
 
 #ifndef O_NOFOLLOW
 #   define O_NOFOLLOW 0x0100
@@ -119,6 +120,15 @@ long sys_fcntl_nocancel(int fd, int cmd, long arg)
 			return 4;
 		case F_SETPROTECTIONCLASS:
 			return 0;
+		case F_SETNOSIGPIPE:
+		case F_GETNOSIGPIPE:
+			// The descriptor has to exist, as on Darwin.
+			ret = LINUX_SYSCALL(__NR_fcntl, fd, LINUX_F_GETFD, 0);
+			if (ret < 0)
+				return errno_linux_to_bsd(ret);
+			if (cmd == F_GETNOSIGPIPE)
+				return nosigpipe_get(fd);
+			return nosigpipe_set(fd, arg != 0);
 		// TODO: implement remaining commands
 		default:
 			if (linux_cmd == -1)
