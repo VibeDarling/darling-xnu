@@ -32,6 +32,8 @@ mig(src/other/signal/exc.defs)
 
 set(other_sources
 	src/other/mach/lkm.c
+	src/restartable.c
+	src/objc_bp_assist.c
 
 	${CMAKE_CURRENT_BINARY_DIR}/src/other/signal/mach_excUser.c
 )

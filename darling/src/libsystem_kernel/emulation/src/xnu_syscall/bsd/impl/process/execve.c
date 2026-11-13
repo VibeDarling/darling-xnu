@@ -299,6 +299,7 @@ long sys_execve(const char* fname, const char** argvp, const char** envp)
 	linux_sigset_t set;
 	set = (1ull << (SIGNAL_SIGEXC_SUSPEND-1));
 	set |= (1ull << (SIGNAL_S2C-1));
+	set |= (1ull << (SIGNAL_RESTARTABLE_SYNC-1));
 
 	// darlingserver needs to know whether the execve completes successfully or not.
 	// since pidfds don't notify on execve, we have to use a pipe with close-on-exec
