@@ -174,6 +174,81 @@ static uint64_t totalDamaged(unsigned n)
 	return sum;
 }
 
+/* Threads blocked in four different ways while synchronize runs, each released afterwards. */
+static pthread_mutex_t condLock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t condVar = PTHREAD_COND_INITIALIZER;
+static volatile int condGo, sleeperDone, condDone, readDone, machDone;
+static int pipeFds[2];
+static mach_port_t recvPort;
+
+static void *sleeper(void *arg) { (void)arg; usleep(300000); sleeperDone = 1; return NULL; }
+static void *condWaiter(void *arg)
+{
+	(void)arg;
+	pthread_mutex_lock(&condLock);
+	while (!condGo)
+		pthread_cond_wait(&condVar, &condLock);
+	pthread_mutex_unlock(&condLock);
+	condDone = 1;
+	return NULL;
+}
+static void *pipeReader(void *arg)
+{
+	char c;
+	(void)arg;
+	readDone = read(pipeFds[0], &c, 1) == 1 && c == 'x';
+	return NULL;
+}
+static void *machReceiver(void *arg)
+{
+	struct { mach_msg_header_t h; char pad[64]; } m;
+	(void)arg;
+	machDone = mach_msg(&m.h, MACH_RCV_MSG, 0, sizeof(m), recvPort, MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL) == KERN_SUCCESS;
+	return NULL;
+}
+
+static void waitFlag(volatile int *flag)
+{
+	for (int i = 0; i < 5000 && !*flag; i++)
+		usleep(1000);
+}
+
+static void blockedThreadsPhase(unsigned syncs)
+{
+	pthread_t t[4];
+	mach_msg_header_t msg;
+	unsigned ok = 0;
+
+	pipe(pipeFds);
+	mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_RECEIVE, &recvPort);
+	mach_port_insert_right(mach_task_self(), recvPort, recvPort, MACH_MSG_TYPE_MAKE_SEND);
+	pthread_create(&t[0], NULL, sleeper, NULL);
+	pthread_create(&t[1], NULL, condWaiter, NULL);
+	pthread_create(&t[2], NULL, pipeReader, NULL);
+	pthread_create(&t[3], NULL, machReceiver, NULL);
+	usleep(100000);
+	for (unsigned i = 0; i < syncs; i++)
+		ok += task_restartable_ranges_synchronize(mach_task_self()) == KERN_SUCCESS;
+	CHECK(ok == syncs, "%u syncs with a sleeping, a condvar-, a read- and a mach_msg-blocked thread", ok);
+
+	pthread_mutex_lock(&condLock);
+	condGo = 1;
+	pthread_cond_signal(&condVar);
+	pthread_mutex_unlock(&condLock);
+	write(pipeFds[1], "x", 1);
+	memset(&msg, 0, sizeof(msg));
+	msg.msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, 0);
+	msg.msgh_size = sizeof(msg);
+	msg.msgh_remote_port = recvPort;
+	mach_msg(&msg, MACH_SEND_MSG, sizeof(msg), 0, MACH_PORT_NULL, MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
+	waitFlag(&sleeperDone); waitFlag(&condDone); waitFlag(&readDone); waitFlag(&machDone);
+	CHECK(sleeperDone && condDone && readDone && machDone,
+		"all four blocked threads were released afterwards (sleep %d cond %d read %d mach %d)",
+		sleeperDone, condDone, readDone, machDone);
+	for (int i = 0; i < 4; i++)
+		pthread_join(t[i], NULL);
+}
+
 /* Threads that exit while synchronize runs. */
 static volatile int churnStop;
 static volatile unsigned churnCount;
@@ -201,12 +276,47 @@ static void *syncMany(void *arg)
 	return NULL;
 }
 
+/* A signal that interrupts a thread inside the range, with a handler that outlives a synchronize. */
+static volatile int inHandler, releaseHandler, handlerDone;
+static void onSignal(int sig)
+{
+	(void)sig;
+	inHandler = 1;
+	while (!releaseHandler)
+		usleep(1000);
+	handlerDone = 1;
+}
+
+/* A thread whose Mach calls return out-of-line data (task_threads) while others synchronize. */
+static volatile int oolStop;
+static volatile unsigned oolCalls, oolFailures, oolLastKr;
+static void *oolCaller(void *arg)
+{
+	(void)arg;
+	while (!oolStop) {
+		thread_act_array_t threads;
+		mach_msg_type_number_t count;
+		kern_return_t kr = task_threads(mach_task_self(), &threads, &count);
+		if (kr == KERN_SUCCESS) {
+			for (mach_msg_type_number_t i = 0; i < count; i++)
+				mach_port_deallocate(mach_task_self(), threads[i]);
+			vm_deallocate(mach_task_self(), (vm_address_t)threads, count * sizeof(thread_t));
+		} else {
+			oolFailures++;
+			oolLastKr = kr;
+		}
+		oolCalls++;
+	}
+	return NULL;
+}
+
+
 static int wanted(const char *phases, char phase)
 {
 	return phases == NULL || strchr(phases, phase) != NULL;
 }
 
-/* usage: restartable-ranges-guest [PHASES]; PHASES is a subset of "nspcx", default all. */
+/* usage: restartable-ranges-guest [PHASES]; PHASES is a subset of "nspcxbgo", default all. */
 int main(int argc, char **argv)
 {
 	const char *phases = argc > 1 ? argv[1] : NULL;
@@ -319,6 +429,48 @@ int main(int argc, char **argv)
 		pthread_join(c, NULL);
 		CHECK(fails == 0, "%u synchronizes while %u threads were created and exited: %u failures",
 			SYNCS, churnCount, fails);
+	}
+
+	if (wanted(phases, 'b')) {
+		phaseName = "b: blocked threads";
+		blockedThreadsPhase(20);
+	}
+
+	if (wanted(phases, 'o')) {
+		pthread_t c;
+		unsigned fails = 0;
+		phaseName = "o: out-of-line replies";
+		pthread_create(&c, NULL, oolCaller, NULL);
+		for (unsigned s = 0; s < SYNCS; s++)
+			if (task_restartable_ranges_synchronize(mach_task_self()) != KERN_SUCCESS)
+				fails++;
+		oolStop = 1;
+		pthread_join(c, NULL);
+		CHECK(fails == 0 && oolFailures == 0,
+			"%u synchronizes while another thread made %u task_threads calls: %u synchronize failures, %u call failures (last %#x)",
+			SYNCS, oolCalls, fails, oolFailures, oolLastKr);
+	}
+
+	if (wanted(phases, 'g')) {
+		/* Signal return: the interrupted PC, saved in the signal frame, is inside the range
+		 * while the handler runs. */
+		uint64_t r0, r1;
+		phaseName = "g: signal return";
+		signal(SIGUSR1, onSignal);
+		pthread_kill(spinThreads[0], SIGUSR1);
+		for (int i = 0; i < 5000 && !inHandler; i++)
+			usleep(1000);
+		CHECK(inHandler, "the signal handler ran on the spinning thread");
+		task_restartable_ranges_synchronize(mach_task_self());
+		r0 = spins[0].restarts;
+		releaseHandler = 1;
+		waitFlag(&handlerDone);
+		usleep(50000);
+		r1 = spins[0].restarts;
+		CHECK(r1 > r0, "returning from the handler restarted the interrupted thread (%llu -> %llu)",
+			(unsigned long long)r0, (unsigned long long)r1);
+		CHECK(totalDamaged(N) == 0, "registers survived the signal return (%llu damaged)",
+			(unsigned long long)totalDamaged(N));
 	}
 
 	phaseName = "stop";
