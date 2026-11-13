@@ -18,6 +18,7 @@
 #include <darling/emulation/xnu_syscall/bsd/impl/signal/kill.h>
 #include <darling/emulation/common/simple.h>
 #include <darling/emulation/common/tsd.h>
+#include <darling/emulation/other/restartable.h>
 #include <darling/emulation/xnu_syscall/machdep/impl/tls.h>
 
 #include <darlingserver/rpc.h>
@@ -35,6 +36,19 @@ extern int getpid(void);
 extern _libkernel_functions_t _libkernel_functions;
 
 void darling_sigexc_uninstall(void);
+// The interrupted PC of a thread inside a restartable range is replaced by the range's recovery
+// address (see restartable.c); no server call, so it is safe in the middle of any RPC.
+static void restartable_sync_handler(int signum, struct linux_siginfo* info, struct linux_ucontext* ctxt)
+{
+#if defined(__x86_64__)
+	ctxt->uc_mcontext.gregs.rip = darling_restartable_sync_interrupted(ctxt->uc_mcontext.gregs.rip);
+#elif defined(__i386__)
+	ctxt->uc_mcontext.gregs.eip = (int) darling_restartable_sync_interrupted((unsigned int) ctxt->uc_mcontext.gregs.eip);
+#elif defined(__aarch64__) || defined(__arm64__)
+	ctxt->uc_mcontext.gregs.pc = darling_restartable_sync_interrupted(ctxt->uc_mcontext.gregs.pc);
+#endif
+}
+
 void sigrt_handler(int signum, struct linux_siginfo* info, struct linux_ucontext* ctxt);
 
 #define SIGEXC_STACK_SIZE (48ULL * 1024ULL)
@@ -85,10 +99,20 @@ static void state_to_kernel(struct linux_ucontext* ctxt, void* tstate, void* fst
 #define kern_printf(...)
 #endif
 
+static void restartable_sync_handler(int signum, struct linux_siginfo* info, struct linux_ucontext* ctxt);
+
 void sigexc_setup1(void)
 {
+	struct linux_sigaction sa;
+
 	handle_rt_signal(SIGNAL_SIGEXC_SUSPEND);
 	handle_rt_signal(SIGNAL_S2C);
+
+	sa.sa_sigaction = (linux_sig_handler*)restartable_sync_handler;
+	sa.sa_mask = 0;
+	sa.sa_flags = LINUX_SA_RESTORER | LINUX_SA_SIGINFO | LINUX_SA_RESTART | LINUX_SA_ONSTACK;
+	sa.sa_restorer = sig_restorer;
+	LINUX_SYSCALL(__NR_rt_sigaction, SIGNAL_RESTARTABLE_SYNC, &sa, NULL, sizeof(sa.sa_mask));
 }
 
 void sigexc_setup2(void)
@@ -96,6 +120,7 @@ void sigexc_setup2(void)
 	linux_sigset_t set;
 	set = (1ull << (SIGNAL_SIGEXC_SUSPEND-1));
 	set |= (1ull << (SIGNAL_S2C-1));
+	set |= (1ull << (SIGNAL_RESTARTABLE_SYNC-1));
 
 	LINUX_SYSCALL(__NR_rt_sigprocmask, 1 /* LINUX_SIG_UNBLOCK */,
 		&set, NULL, sizeof(linux_sigset_t));

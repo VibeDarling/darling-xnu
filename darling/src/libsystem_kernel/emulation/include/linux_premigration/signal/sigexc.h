@@ -10,6 +10,9 @@
 // Uses one of the below magic values to toggle the debugging state
 #define SIGNAL_SIGEXC_SUSPEND	LINUX_SIGRTMIN
 #define SIGNAL_S2C (LINUX_SIGRTMIN + 1)
+// task_restartable_ranges_synchronize: the handler makes no server call and only edits the
+// interrupted PC (see restartable.c), so unlike the two above it needs no interrupt_enter.
+#define SIGNAL_RESTARTABLE_SYNC (LINUX_SIGRTMIN + 2)
 
 void sigexc_setup(void);
 
