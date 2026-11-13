@@ -6,14 +6,42 @@ enable_language(ASM)
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -std=gnu99 -fvisibility=hidden -fPIC -fno-builtin -ggdb -Wno-int-conversion -Wno-compare-distinct-pointer-types")
 set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -nostdlib")
 
-# This controls only kern.osproductversion, not the parent SystemVersion.plist.
-set(DARLING_EMULATED_OS_PRODUCT_VERSION "26.0" CACHE STRING
-	"Product version returned by kern.osproductversion (requires rebuilding libsystem_kernel)")
+# kern.osproductversion. This controls only that sysctl, not the parent SystemVersion.plist.
+# The default is a plain variable, not a cache entry, so a build directory
+# configured earlier picks up a new default on reconfigure. It must equal the
+# ProductVersion of the superproject's SystemVersion.plist (tests/os-version-agree.rb
+# there checks it). The macOS 26.6 Swift runtime requires >= 26.4.
+set(DARLING_DEFAULT_OS_PRODUCT_VERSION "26.6")
+# Empty means "use the default".
+set(DARLING_EMULATED_OS_PRODUCT_VERSION_OVERRIDE "" CACHE STRING
+	"Product version returned by kern.osproductversion instead of the default (requires rebuilding libsystem_kernel)")
+
+# Former cache entry, DARLING_EMULATED_OS_PRODUCT_VERSION, whose default was 26.0.
+# Build directories configured before the rename hold "26.0" in it, which is not
+# an override; any other value was set on purpose and moves, once, into the override
+# so that removing the override later restores the default.
+if(DEFINED CACHE{DARLING_EMULATED_OS_PRODUCT_VERSION})
+	if("$CACHE{DARLING_EMULATED_OS_PRODUCT_VERSION}" STREQUAL "26.0")
+		message(WARNING "Ignoring cached DARLING_EMULATED_OS_PRODUCT_VERSION=26.0 (the former default); "
+			"use DARLING_EMULATED_OS_PRODUCT_VERSION_OVERRIDE to pin a version")
+	elseif(NOT DARLING_EMULATED_OS_PRODUCT_VERSION_OVERRIDE)
+		message(WARNING "DARLING_EMULATED_OS_PRODUCT_VERSION is renamed "
+			"DARLING_EMULATED_OS_PRODUCT_VERSION_OVERRIDE; moving $CACHE{DARLING_EMULATED_OS_PRODUCT_VERSION} there")
+		set(DARLING_EMULATED_OS_PRODUCT_VERSION_OVERRIDE "$CACHE{DARLING_EMULATED_OS_PRODUCT_VERSION}"
+			CACHE STRING "Product version returned by kern.osproductversion instead of the default (requires rebuilding libsystem_kernel)" FORCE)
+	endif()
+	unset(DARLING_EMULATED_OS_PRODUCT_VERSION CACHE)
+endif()
+
+set(DARLING_EMULATED_OS_PRODUCT_VERSION "${DARLING_DEFAULT_OS_PRODUCT_VERSION}")
+if(DARLING_EMULATED_OS_PRODUCT_VERSION_OVERRIDE)
+	set(DARLING_EMULATED_OS_PRODUCT_VERSION "${DARLING_EMULATED_OS_PRODUCT_VERSION_OVERRIDE}")
+endif()
 
 add_definitions(-DBSDTHREAD_WRAP_LINUX_PTHREAD
 	-DEMULATED_SYSNAME="Darwin"
-	-DEMULATED_RELEASE="25.0.0"
-	-DEMULATED_VERSION="Darwin Kernel Version 25.0.0"
+	-DEMULATED_RELEASE="25.6.0"
+	-DEMULATED_VERSION="Darwin Kernel Version 25.6.0"
 	-DEMULATED_OSVERSION="20G1120"
 	-DEMULATED_OSPRODUCTVERSION="${DARLING_EMULATED_OS_PRODUCT_VERSION}"
 )
