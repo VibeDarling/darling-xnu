@@ -259,6 +259,9 @@ void sigrt_handler(int signum, struct linux_siginfo* info, struct linux_ucontext
 		__simple_printf("Unknown/unrecognized real-time signal: %d", signum);
 	}
 
+	if (ctxt)
+		restart_if_in_restartable_range(ctxt);
+
 	status = dserver_rpc_interrupt_exit();
 
 	if (status != 0) {
@@ -373,6 +376,28 @@ static bool emulate_darling_tsd_read(struct linux_ucontext* ctxt)
 }
 
 #endif
+
+// xnu forces the restartable-ranges PC check on every sigreturn, because the PC saved in a signal
+// frame is invisible to task_restartable_ranges_synchronize while the handler runs.
+void restart_if_in_restartable_range(struct linux_ucontext* ctxt)
+{
+#if defined(__x86_64__)
+	uint64_t recovery = darling_restartable_recovery_pc(ctxt->uc_mcontext.gregs.rip);
+
+	if (recovery)
+		ctxt->uc_mcontext.gregs.rip = recovery;
+#elif defined(__i386__)
+	uint64_t recovery = darling_restartable_recovery_pc((unsigned int) ctxt->uc_mcontext.gregs.eip);
+
+	if (recovery)
+		ctxt->uc_mcontext.gregs.eip = (int) recovery;
+#elif defined(__aarch64__) || defined(__arm64__)
+	uint64_t recovery = darling_restartable_recovery_pc(ctxt->uc_mcontext.gregs.pc);
+
+	if (recovery)
+		ctxt->uc_mcontext.gregs.pc = recovery;
+#endif
+}
 
 void sigexc_handler(int linux_signum, struct linux_siginfo* info, struct linux_ucontext* ctxt)
 {
@@ -625,6 +650,9 @@ void sigexc_handler(int linux_signum, struct linux_siginfo* info, struct linux_u
 	kern_printf("sigexc: handler (%d) returning\n", linux_signum);
 
 out:
+	if (ctxt)
+		restart_if_in_restartable_range(ctxt);
+
 	status = dserver_rpc_interrupt_exit();
 
 	if (status != 0) {

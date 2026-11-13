@@ -143,6 +143,12 @@ recoveryPC(uint64_t pc)
 	return 0;
 }
 
+uint64_t
+darling_restartable_recovery_pc(uint64_t pc)
+{
+	return recoveryPC(pc);
+}
+
 /* One synchronize call at a time: its rounds share the slot tables the handler reads. */
 #define SYNC_THREAD_MAX 4096
 #define SYNC_PASSES 4

@@ -178,6 +178,7 @@ long sys_sigaction(int signum, const struct bsd___sigaction* nsa, struct bsd_sig
 static void handler_linux_to_bsd_wrapper(int linux_signum, struct linux_siginfo* info, void* ctxt) {
 	dserver_rpc_interrupt_enter();
 	handler_linux_to_bsd(linux_signum, info, ctxt);
+	restart_if_in_restartable_range((struct linux_ucontext*) ctxt);
 	dserver_rpc_interrupt_exit();
 };
 
