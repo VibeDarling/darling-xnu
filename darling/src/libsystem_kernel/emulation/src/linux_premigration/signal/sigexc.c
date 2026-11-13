@@ -1,4 +1,5 @@
 #include <darling/emulation/linux_premigration/signal/sigexc.h>
+#include <darling/emulation/linux_premigration/signal/crash_report.h>
 #include <darling/emulation/conversion/duct_errno.h>
 
 #include <stddef.h>
@@ -571,6 +572,8 @@ void sigexc_handler(int linux_signum, struct linux_siginfo* info, struct linux_u
 			else
 			{
 				kern_printf("sigexc: emulating default signal effects\n");
+				if (crash_report_on)
+					crash_report_print(bsd_signum, info, ctxt);
 				// Set handler to SIG_DFL
 				struct linux_sigaction sa;
 				sa.sa_sigaction = (linux_sig_handler*) NULL; // SIG_DFL

@@ -36,6 +36,7 @@
 #ifdef DARLING
 extern int mach_init(const char** applep);
 extern void sigexc_setup(void);
+extern void crash_report_enable(const char* envp[]);
 #else
 extern int mach_init(void);
 #endif
@@ -90,6 +91,7 @@ __libkernel_init(_libkernel_functions_t fns,
 #ifdef DARLING
 	mach_init(apple);
 	sigexc_setup();
+	crash_report_enable(envp);
 #else
 	mach_init();
 #endif
