@@ -24,8 +24,8 @@ Dir.mktmpdir('product-version') do |dir|
     int main(int argc, char **argv) {
         if (argc != 2 || strcmp(EMULATED_OSPRODUCTVERSION, argv[1]) != 0)
             return 1;
-        if (strcmp(EMULATED_RELEASE, "25.0.0") != 0 ||
-            strcmp(EMULATED_VERSION, "Darwin Kernel Version 25.0.0") != 0 ||
+        if (strcmp(EMULATED_RELEASE, "25.6.0") != 0 ||
+            strcmp(EMULATED_VERSION, "Darwin Kernel Version 25.6.0") != 0 ||
             strcmp(EMULATED_OSVERSION, "20G1120") != 0 ||
             strcmp(EMULATED_SYSNAME, "Darwin") != 0)
             return 2;
