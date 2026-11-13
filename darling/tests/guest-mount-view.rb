@@ -1,14 +1,15 @@
-# Native Linux test of the actual statfs64 and fstatfs64 emulation: the guest must see its own volume
+# Native Linux test of the actual getfsstat64, statfs64 and fstatfs64 emulation: the guest must see its own volume
 # view. The root volume is the mount holding the guest root and is named "/" (as on Darwin), mounts below
 # the guest root keep their guest path, and other host mounts are not listed by getfsstat.
-# Usage: ruby darling/tests/guest-mount-view.rb [path/to/statfs.c [path/to/fstatfs.c]]   (older copies are the negative control)
+# Usage: ruby darling/tests/guest-mount-view.rb [path/to/getfsstat.c path/to/statfs.c [path/to/fstatfs.c]]   (older copies are the negative control)
 require 'tmpdir'
 repo = File.expand_path('../..', __dir__)
 emulation = File.join(repo, 'darling/src/libsystem_kernel/emulation')
 impl = File.join(emulation, 'src/xnu_syscall/bsd/impl/stat')
 strip = ->(text) { text.lines.reject { |line| line.start_with?('#include') }.join }
-statfs = strip.call(File.read(ARGV[0] || File.join(impl, 'statfs.c')))
-fstatfs = strip.call(File.read(ARGV[1] || File.join(impl, 'fstatfs.c')))
+getfsstat = strip.call(File.read(ARGV[0] || File.join(impl, 'getfsstat.c')))
+statfs = strip.call(File.read(ARGV[1] || File.join(impl, 'statfs.c')))
+fstatfs = strip.call(File.read(ARGV[2] || File.join(impl, 'fstatfs.c')))
 helper = strip.call(File.read(File.join(emulation, 'include/xnu_syscall/bsd/helper/stat/guest_mount.h')))
 common_h = File.read(File.join(emulation, 'include/conversion/stat/common.h'))
 bsd_statfs64 = common_h[/^struct bsd_statfs64\n\{.*?^\};/m] or abort 'struct bsd_statfs64 not found'
@@ -54,8 +55,11 @@ program = <<~C
   }
   static int vchroot_expand(struct vchroot_expand_args *a) { if (!strcmp(a->path, "/")) strcpy(a->path, "/home/u/prefix/"); return 0; }
   #{helper}
+  #{getfsstat}
   #{statfs}
   #{fstatfs}
+  static struct bsd_statfs64 entries[16];
+  static int find(int count, const char *on) { for (int i = 0; i < count; i++) if (!strcmp(entries[i].f_mntonname, on)) return i; return -1; }
   static const char *on_for(const char *path) {
     static struct bsd_statfs64 s; memset(&s, 0xa5, sizeof s);
     assert(sys_statfs64(path, &s) == 0); return s.f_mntonname;
@@ -64,6 +68,18 @@ program = <<~C
   int main(void) {
     /* /proc/self/mounts: root volume twice at one mount point (the last wins), procfs below the guest root,
        a mount that cannot be queried, a sibling directory whose name starts like the guest root. */
+    assert(sys_getfsstat64(NULL, 0, 0) == 2);
+    memset(entries, 0xa5, sizeof entries);
+    long n = sys_getfsstat64(entries, sizeof entries, 0);
+    assert(n == 2);
+    int root = find(n, "/"), proc = find(n, "/proc");
+    assert(root >= 0 && proc >= 0);
+    assert(!strcmp(entries[root].f_mntfromname, "overlay2") && !strcmp(entries[root].f_fstypename, "overlay"));
+    assert(!strcmp(entries[proc].f_mntfromname, "proc") && !strcmp(entries[proc].f_fstypename, "proc"));
+    assert(entries[root].f_bsize == 4096 && entries[root].f_owner == 0); /* the entry is cleared before it is filled */
+    assert(entries[2].f_bsize == (uint32_t)0xa5a5a5a5); /* nothing written past the listed volumes */
+    /* A buffer for one entry gets one entry; the count with and without a buffer agrees. */
+    assert(sys_getfsstat64(entries, sizeof entries[0], 0) == 1);
     assert(!strcmp(on_for("/home/u/prefix/Applications"), "/"));
     assert(!strcmp(on_for("/home/u/prefix/proc/1"), "/proc"));
     assert(!strcmp(on_for("/home/other"), "/Volumes/SystemRoot/home")); /* a shallower mount holding the root is not the root volume */
@@ -77,7 +93,7 @@ program = <<~C
     assert(fstatfs_on(3, on) == 0 && !strcmp(on, "/proc"));
     assert(fstatfs_on(4, on) == 0 && !strcmp(on, "/Volumes/SystemRoot/home/u/prefix2"));
     assert(fstatfs_on(5, on) == 0 && !strcmp(on, "/Volumes/SystemRoot"));
-    puts("PASS: statfs and fstatfs name the root volume / and keep guest paths below it");
+    puts("PASS: root volume is /, below-root mounts keep guest paths, host mounts are hidden from getfsstat, fstatfs agrees");
     return 0;
   }
 C
