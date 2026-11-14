@@ -31,6 +31,7 @@
 #include <mach/kern_return.h>
 #include <mach/mach_host.h>
 #include <mach/host_priv.h>
+#include <mach/mach_init.h>
 #include <sys/types.h>
 
 kern_return_t
@@ -75,15 +76,63 @@ host_check_multiuser_mode(host_t host __unused,
 }
 
 /*
+ * The IO main port of the host is iokitd, Darling's IOKit daemon. Darling's kernel half has no
+ * IO master port of its own (it answers success with MACH_PORT_NULL), and Darling's IOKit
+ * already reaches iokitd by name through the bootstrap server, so this does the same lookup
+ * when the kernel has no port. liblaunch sits above libsystem_kernel, hence the dlsym, as
+ * in exc_catcher.c. A failure is returned as an error, never as success with a null port.
+ */
+#define RTLD_DEFAULT ((void *) -2)
+#define IOKITD_BOOTSTRAP_NAME "org.darlinghq.iokitd"
+
+extern void* (*_dlsym)(void*, const char*);
+
+extern kern_return_t
+_kernelrpc_host_get_io_master(host_t host, mach_port_t *io_master);
+
+static kern_return_t
+host_get_io_main_port(host_t host, mach_port_t *io_main)
+{
+	typedef kern_return_t (*bootstrap_look_up_t)(mach_port_t, const char *, mach_port_t *);
+	bootstrap_look_up_t look_up;
+	kern_return_t kr;
+
+	kr = _kernelrpc_host_get_io_master(host, io_main);
+	if (kr != KERN_SUCCESS || MACH_PORT_VALID(*io_main)) {
+		return kr;
+	}
+
+	*io_main = MACH_PORT_NULL;
+	if (bootstrap_port == MACH_PORT_NULL) {
+		return KERN_FAILURE;
+	}
+	look_up = _dlsym ? (bootstrap_look_up_t)_dlsym(RTLD_DEFAULT, "bootstrap_look_up") : NULL;
+	if (look_up == NULL) {
+		return KERN_NOT_SUPPORTED;
+	}
+	kr = look_up(bootstrap_port, IOKITD_BOOTSTRAP_NAME, io_main);
+	if (kr == KERN_SUCCESS && !MACH_PORT_VALID(*io_main)) {
+		return KERN_FAILURE;
+	}
+	return kr;
+}
+
+/*
  * macOS 13 (xnu-8792) renamed the MIG routine host_get_io_master to
  * host_get_io_main (same routine id 205); IOKit's IOMasterPort-to-IOMainPort
  * rename was macOS 12. Binaries built against newer SDKs, and the IOKit in the
  * macOS shared cache, import the new name.
  */
 kern_return_t
+host_get_io_master(host_t host, mach_port_t *io_master)
+{
+	return host_get_io_main_port(host, io_master);
+}
+
+kern_return_t
 host_get_io_main(host_t host, mach_port_t *io_main)
 {
-	return host_get_io_master(host, io_main);
+	return host_get_io_main_port(host, io_main);
 }
 
 extern kern_return_t

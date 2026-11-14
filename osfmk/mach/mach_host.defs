@@ -139,7 +139,11 @@ routine host_processor_info(
 /*
  * 	Return host IO master access port
  */
+#if !KERNEL && !LIBSYSCALL_INTERFACE
+routine _kernelrpc_host_get_io_master(
+#else
 routine host_get_io_master(
+#endif
                 host            : host_t;
         out     io_master       : io_master_t);
 
